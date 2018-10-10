@@ -7,11 +7,13 @@ from rest_framework.generics import ListAPIView, get_object_or_404, RetrieveUpda
 from rest_framework import viewsets
 
 from common.utils import set_or_append_attr_bulk
-from users.permissions import IsValidUser, IsSuperUser, IsSuperUserOrAppUser
+from common.permissions import IsValidUser, IsOrgAdmin, IsOrgAdminOrAppUser
+from orgs.mixins import RootOrgViewMixin
 from .utils import AssetPermissionUtil
 from .models import AssetPermission
 from .hands import AssetGrantedSerializer, User, UserGroup, Asset, Node, \
     NodeGrantedSerializer, SystemUser, NodeSerializer
+from orgs.utils import set_to_root_org
 from . import serializers
 
 
@@ -21,7 +23,7 @@ class AssetPermissionViewSet(viewsets.ModelViewSet):
     """
     queryset = AssetPermission.objects.all()
     serializer_class = serializers.AssetPermissionCreateUpdateSerializer
-    permission_classes = (IsSuperUser,)
+    permission_classes = (IsOrgAdmin,)
 
     def get_serializer_class(self):
         if self.action in ("list", 'retrieve'):
@@ -41,11 +43,11 @@ class AssetPermissionViewSet(viewsets.ModelViewSet):
             asset = get_object_or_404(Asset, pk=asset_id)
             permissions = set(queryset.filter(assets=asset))
             for node in asset.nodes.all():
-                inherit_nodes.update(set(node.ancestor_with_node))
+                inherit_nodes.update(set(node.get_ancestor(with_self=True)))
         elif node_id:
             node = get_object_or_404(Node, pk=node_id)
             permissions = set(queryset.filter(nodes=node))
-            inherit_nodes = node.ancestor
+            inherit_nodes = node.get_ancestor()
 
         for n in inherit_nodes:
             _permissions = queryset.filter(nodes=n)
@@ -58,10 +60,17 @@ class UserGrantedAssetsApi(ListAPIView):
     """
     用户授权的所有资产
     """
-    permission_classes = (IsSuperUserOrAppUser,)
+    permission_classes = (IsOrgAdminOrAppUser,)
     serializer_class = AssetGrantedSerializer
-
+    
+    def change_org_if_need(self):
+        if self.request.user.is_superuser or \
+                self.request.user.is_app or \
+                self.kwargs.get('pk') is None:
+            set_to_root_org()
+    
     def get_queryset(self):
+        self.change_org_if_need()
         user_id = self.kwargs.get('pk', '')
         queryset = []
 
@@ -70,11 +79,9 @@ class UserGrantedAssetsApi(ListAPIView):
         else:
             user = self.request.user
 
-        for k, v in AssetPermissionUtil.get_user_assets(user).items():
-            if k.is_unixlike():
-                system_users_granted = [s for s in v if s.protocol == 'ssh']
-            else:
-                system_users_granted = [s for s in v if s.protocol == 'rdp']
+        util = AssetPermissionUtil(user)
+        for k, v in util.get_assets().items():
+            system_users_granted = [s for s in v if s.protocol == k.protocol]
             k.system_users_granted = system_users_granted
             queryset.append(k)
         return queryset
@@ -86,16 +93,27 @@ class UserGrantedAssetsApi(ListAPIView):
 
 
 class UserGrantedNodesApi(ListAPIView):
-    permission_classes = (IsSuperUser,)
+    """
+    查询用户授权的所有节点的API, 如果是超级用户或者是 app，切换到root org
+    """
+    permission_classes = (IsOrgAdmin,)
     serializer_class = NodeSerializer
+    
+    def change_org_if_need(self):
+        if self.request.user.is_superuser or \
+                self.request.user.is_app or \
+                self.kwargs.get('pk') is None:
+            set_to_root_org()
 
     def get_queryset(self):
+        self.change_org_if_need()
         user_id = self.kwargs.get('pk', '')
         if user_id:
             user = get_object_or_404(User, id=user_id)
         else:
             user = self.request.user
-        nodes = AssetPermissionUtil.get_user_nodes_with_assets(user)
+        util = AssetPermissionUtil(user)
+        nodes = util.get_nodes_with_assets()
         return nodes.keys()
 
     def get_permissions(self):
@@ -105,10 +123,20 @@ class UserGrantedNodesApi(ListAPIView):
 
 
 class UserGrantedNodesWithAssetsApi(ListAPIView):
-    permission_classes = (IsSuperUserOrAppUser,)
+    """
+    用户授权的节点并带着节点下资产的api
+    """
+    permission_classes = (IsOrgAdminOrAppUser,)
     serializer_class = NodeGrantedSerializer
+    
+    def change_org_if_need(self):
+        if self.request.user.is_superuser or \
+                self.request.user.is_app or \
+                self.kwargs.get('pk') is None:
+            set_to_root_org()
 
     def get_queryset(self):
+        self.change_org_if_need()
         user_id = self.kwargs.get('pk', '')
         queryset = []
         if not user_id:
@@ -116,14 +144,12 @@ class UserGrantedNodesWithAssetsApi(ListAPIView):
         else:
             user = get_object_or_404(User, id=user_id)
 
-        nodes = AssetPermissionUtil.get_user_nodes_with_assets(user)
+        util = AssetPermissionUtil(user)
+        nodes = util.get_nodes_with_assets()
         for node, _assets in nodes.items():
             assets = _assets.keys()
             for k, v in _assets.items():
-                if k.is_unixlike():
-                    system_users_granted = [s for s in v if s.protocol == 'ssh']
-                else:
-                    system_users_granted = [s for s in v if s.protocol == 'rdp']
+                system_users_granted = [s for s in v if s.protocol == k.protocol]
                 k.system_users_granted = system_users_granted
             node.assets_granted = assets
             queryset.append(node)
@@ -136,10 +162,20 @@ class UserGrantedNodesWithAssetsApi(ListAPIView):
 
 
 class UserGrantedNodeAssetsApi(ListAPIView):
-    permission_classes = (IsSuperUserOrAppUser,)
+    """
+    查询用户授权的节点下的资产的api, 与上面api不同的是，只返回某个节点下的资产
+    """
+    permission_classes = (IsOrgAdminOrAppUser,)
     serializer_class = AssetGrantedSerializer
+    
+    def change_org_if_need(self):
+        if self.request.user.is_superuser or \
+                self.request.user.is_app or \
+                self.kwargs.get('pk') is None:
+            set_to_root_org()
 
     def get_queryset(self):
+        self.change_org_if_need()
         user_id = self.kwargs.get('pk', '')
         node_id = self.kwargs.get('node_id')
 
@@ -147,8 +183,9 @@ class UserGrantedNodeAssetsApi(ListAPIView):
             user = get_object_or_404(User, id=user_id)
         else:
             user = self.request.user
+        util = AssetPermissionUtil(user)
         node = get_object_or_404(Node, id=node_id)
-        nodes = AssetPermissionUtil.get_user_nodes_with_assets(user)
+        nodes = util.get_nodes_with_assets()
         assets = nodes.get(node, [])
         for asset, system_users in assets.items():
             asset.system_users_granted = system_users
@@ -161,7 +198,7 @@ class UserGrantedNodeAssetsApi(ListAPIView):
 
 
 class UserGroupGrantedAssetsApi(ListAPIView):
-    permission_classes = (IsSuperUser,)
+    permission_classes = (IsOrgAdmin,)
     serializer_class = AssetGrantedSerializer
 
     def get_queryset(self):
@@ -172,7 +209,8 @@ class UserGroupGrantedAssetsApi(ListAPIView):
             return queryset
 
         user_group = get_object_or_404(UserGroup, id=user_group_id)
-        assets = AssetPermissionUtil.get_user_group_assets(user_group)
+        util = AssetPermissionUtil(user_group)
+        assets = util.get_assets()
         for k, v in assets.items():
             k.system_users_granted = v
             queryset.append(k)
@@ -180,7 +218,7 @@ class UserGroupGrantedAssetsApi(ListAPIView):
 
 
 class UserGroupGrantedNodesApi(ListAPIView):
-    permission_classes = (IsSuperUser,)
+    permission_classes = (IsOrgAdmin,)
     serializer_class = NodeSerializer
 
     def get_queryset(self):
@@ -189,13 +227,14 @@ class UserGroupGrantedNodesApi(ListAPIView):
 
         if group_id:
             group = get_object_or_404(UserGroup, id=group_id)
-            nodes = AssetPermissionUtil.get_user_group_nodes_with_assets(group)
+            util = AssetPermissionUtil(group)
+            nodes = util.get_nodes_with_assets()
             return nodes.keys()
         return queryset
 
 
 class UserGroupGrantedNodesWithAssetsApi(ListAPIView):
-    permission_classes = (IsSuperUser,)
+    permission_classes = (IsOrgAdmin,)
     serializer_class = NodeGrantedSerializer
 
     def get_queryset(self):
@@ -206,7 +245,8 @@ class UserGroupGrantedNodesWithAssetsApi(ListAPIView):
             return queryset
 
         user_group = get_object_or_404(UserGroup, id=user_group_id)
-        nodes = AssetPermissionUtil.get_user_group_nodes_with_assets(user_group)
+        util = AssetPermissionUtil(user_group)
+        nodes = util.get_nodes_with_assets()
         for node, _assets in nodes.items():
             assets = _assets.keys()
             for asset, system_users in _assets.items():
@@ -217,7 +257,7 @@ class UserGroupGrantedNodesWithAssetsApi(ListAPIView):
 
 
 class UserGroupGrantedNodeAssetsApi(ListAPIView):
-    permission_classes = (IsSuperUserOrAppUser,)
+    permission_classes = (IsOrgAdminOrAppUser,)
     serializer_class = AssetGrantedSerializer
 
     def get_queryset(self):
@@ -226,15 +266,16 @@ class UserGroupGrantedNodeAssetsApi(ListAPIView):
 
         user_group = get_object_or_404(UserGroup, id=user_group_id)
         node = get_object_or_404(Node, id=node_id)
-        nodes = AssetPermissionUtil.get_user_group_nodes_with_assets(user_group)
+        util = AssetPermissionUtil(user_group)
+        nodes = util.get_nodes_with_assets()
         assets = nodes.get(node, [])
         for asset, system_users in assets.items():
             asset.system_users_granted = system_users
         return assets
 
 
-class ValidateUserAssetPermissionView(APIView):
-    permission_classes = (IsSuperUserOrAppUser,)
+class ValidateUserAssetPermissionView(RootOrgViewMixin, APIView):
+    permission_classes = (IsOrgAdminOrAppUser,)
 
     @staticmethod
     def get(request):
@@ -246,7 +287,8 @@ class ValidateUserAssetPermissionView(APIView):
         asset = get_object_or_404(Asset, id=asset_id)
         system_user = get_object_or_404(SystemUser, id=system_id)
 
-        assets_granted = AssetPermissionUtil.get_user_assets(user)
+        util = AssetPermissionUtil(user)
+        assets_granted = util.get_assets()
         if system_user in assets_granted.get(asset, []):
             return Response({'msg': True}, status=200)
         else:
@@ -257,7 +299,7 @@ class AssetPermissionRemoveUserApi(RetrieveUpdateAPIView):
     """
     将用户从授权中移除，Detail页面会调用
     """
-    permission_classes = (IsSuperUser,)
+    permission_classes = (IsOrgAdmin,)
     serializer_class = serializers.AssetPermissionUpdateUserSerializer
     queryset = AssetPermission.objects.all()
 
@@ -274,7 +316,7 @@ class AssetPermissionRemoveUserApi(RetrieveUpdateAPIView):
 
 
 class AssetPermissionAddUserApi(RetrieveUpdateAPIView):
-    permission_classes = (IsSuperUser,)
+    permission_classes = (IsOrgAdmin,)
     serializer_class = serializers.AssetPermissionUpdateUserSerializer
     queryset = AssetPermission.objects.all()
 
@@ -294,7 +336,7 @@ class AssetPermissionRemoveAssetApi(RetrieveUpdateAPIView):
     """
     将用户从授权中移除，Detail页面会调用
     """
-    permission_classes = (IsSuperUser,)
+    permission_classes = (IsOrgAdmin,)
     serializer_class = serializers.AssetPermissionUpdateAssetSerializer
     queryset = AssetPermission.objects.all()
 
@@ -311,7 +353,7 @@ class AssetPermissionRemoveAssetApi(RetrieveUpdateAPIView):
 
 
 class AssetPermissionAddAssetApi(RetrieveUpdateAPIView):
-    permission_classes = (IsSuperUser,)
+    permission_classes = (IsOrgAdmin,)
     serializer_class = serializers.AssetPermissionUpdateAssetSerializer
     queryset = AssetPermission.objects.all()
 

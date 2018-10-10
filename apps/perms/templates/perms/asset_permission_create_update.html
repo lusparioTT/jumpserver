@@ -50,7 +50,7 @@
                                 </div>
                             </div>
                             <div class="form-group {% if form.date_expired.errors or form.date_start.errors %} has-error {% endif %}" id="date_5">
-                                <label for="{{ form.date_expired.id_for_label }}" class="col-sm-2 control-label">{{ form.date_expired.label }}</label>
+                                <label for="{{ form.date_expired.id_for_label }}" class="col-sm-2 control-label">{% trans 'Validity period' %}</label>
                                 <div class="col-sm-9">
                                     <div class="input-daterange input-group" id="datepicker">
                                         <span class="input-group-addon"><i class="fa fa-calendar"></i></span>
@@ -94,8 +94,11 @@ $(document).ready(function () {
         autoclose: true
     });
     $("#id_assets").parent().find(".select2-selection").on('click', function (e) {
-        e.preventDefault();
-        $("#asset_list_modal").modal();
+        if ($(e.target).attr('class') !== 'select2-selection__choice__remove'){
+            e.preventDefault();
+            e.stopPropagation();
+            $("#asset_list_modal").modal();
+        }
     })
 })
 .on('click', '#btn_asset_modal_confirm', function () {
